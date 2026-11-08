@@ -45,5 +45,6 @@ and is noise around zero. If a live agent trades enough coins, the sleeve never 
 ## What to expect
 
 No claimed edge. On dev the entry made +0.022 SOL with 24 qualifying coins, but three coins made 64%
-of it, it is negative at 2x fees, and the 90% interval spans zero. Treat that as luck. The design
+of it, it is negative at 2x fees, and the 90% interval spans zero. Across 16 rebuilt copies of the window the
+median is -0.02 SOL and 11 lose. Treat the dev score as luck. The design
 goal is to lose almost nothing when the market is negative-sum and to size up when a regime pays.

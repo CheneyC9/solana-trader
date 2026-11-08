@@ -49,7 +49,10 @@ Context that explains why:
 
 Net PnL +0.022 SOL, 24 coins with a round trip of at least 0.01 SOL, 48 fills, max drawdown 0.4%,
 guardrails met, L1 regrade reproduced byte for byte. This is noise, not an edge: three coins made
-64% of the gain, net PnL is -0.007 SOL at 2x fees, and the 90% interval is -0.041 to +0.091 SOL.
+64% of the gain, net PnL is -0.007 SOL at 2x fees, and the 90% interval is -0.041 to +0.091 SOL. The kit's `--stress 16` (rebuilt copies of the
+window) agrees: median -0.02 SOL, p10 -0.07, p90 +0.04, 11 of 16 copies lost money, and the dev
+score sits above 14 of 16. Expect a small loss (about the cost of the sleeve) unless a live agent
+earns its way in.
 
 ## Running
 
