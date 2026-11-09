@@ -36,6 +36,20 @@ DEFAULTS = {
     "buyfrac_k": 0,  # trades looked at for the buy share filter (0 = off)
     "buyfrac_min": 0.0,
     "exit_real": 1e9,  # sell once the coin's real reserve reaches this many SOL (a level exit, on top of tp)
+    # stream B: dip buys inside the near-graduation zone
+    "b_on": 0,  # off: on dev the dip stream took coins and slots just before the crossing entry and added little (+0.47 alone, negative at 2x fees)
+    "b_lo": 50.0,  # real SOL reserve band for dip buys
+    "b_hi": 80.0,
+    "b_dip": 0.08,  # buy when the price is this far under its 300-slot high
+    "b_tp": 0.15,
+    "b_sl": 0.25,
+    "b_hold": 1500,  # slots
+    "b_cool": 300,  # slots before the same coin may be dip-bought again
+    "b_frac": 0.05,  # position size as a share of equity (before the governor)
+    "b_max": 3,  # dip positions at once
+    # risk governor: sizes scale with equity against its peak, from 1 (at gov_hi) down to 0 (at gov_lo)
+    "gov_hi": 0.88,
+    "gov_lo": 0.55,
 }
 
 QUALIFY_LAMPORTS = 10_050_000  # buys of a round trip (curve fees included) this large count toward the 20-coin bar (0.01 SOL + margin)
@@ -83,6 +97,7 @@ class GradEngine:
         self.qualified = set()
         self.last_sleeve = -(10**12)
         self.first_slot = None
+        self.scale = 1.0
         self.closed = 0
         self.wins = 0
         self.trace = []  # one line per entry and exit, printed at the end for research
@@ -145,7 +160,7 @@ class GradEngine:
             meta = self.meta.pop(mint)
             if meta.bought == 0 and meta.max_cost == 0:
                 continue  # the buy never filled (rejected or failed): no position existed, so no cooldown and no round trip
-            self.cool[mint] = slot + p["cooldown"]
+            self.cool[mint] = slot + (p["b_cool"] if meta.kind == "dip" else p["cooldown"])
             self.closed += 1
             if max(meta.max_cost, meta.bought) >= QUALIFY_LAMPORTS:
                 self.qualified.add(mint)
@@ -165,6 +180,8 @@ class GradEngine:
             r = value / max(1, held.cost_lamports) - 1
             if meta.kind == "sleeve":
                 out = r >= SLEEVE_TP or r <= -SLEEVE_SL or slot - meta.entry_slot >= SLEEVE_HOLD
+            elif meta.kind == "dip":
+                out = r >= p["b_tp"] or r <= -p["b_sl"] or slot - meta.entry_slot >= p["b_hold"]
             else:
                 out = r >= p["tp"] or r <= -p["sl"] or slot - meta.entry_slot >= p["max_hold"] or rq / 1e9 >= p["exit_real"]
             if out:
@@ -173,13 +190,15 @@ class GradEngine:
                 self.trace.append("SELL %s %s r=%+.3f real=%.1f cost=%.3f held=%d" % (mint[:6], meta.kind, r, rq / 1e9, held.cost_lamports / 1e9, slot - meta.entry_slot))
         self.peak = max(self.peak, equity)
 
+        span = max(1e-9, p["gov_hi"] - p["gov_lo"])
+        self.scale = min(1.0, max(0.0, (equity / self.peak - p["gov_lo"]) / span))
         if equity >= p["dd_stop"] * self.peak:
             self._enter(state, touched, orders, equity, slot, buy_pending, sell_pending, marks)
         return orders
 
     def _enter(self, state, touched, orders, equity, slot, buy_pending, sell_pending, marks):
         p = self.p
-        target = int(equity * p["target_frac"])
+        target = int(equity * p["target_frac"] * self.scale)
         spent = self.tx * sum(1 for o in orders if o["side"] == "sell")
         held_grad = sum(1 for m in self.meta.values() if m.kind == "grad")
         committed = state.committed_position_count()
@@ -215,7 +234,7 @@ class GradEngine:
                 opening = True
             else:
                 meta = self.meta.get(mint)
-                if meta is not None and meta.kind == "sleeve":
+                if meta is not None and meta.kind != "grad":
                     continue
                 opening = False
             have = (held.cost_lamports if held else 0) + pend
@@ -232,6 +251,39 @@ class GradEngine:
                 self.meta[mint] = Meta("grad", slot)
                 b = self.books[mint]
                 self.trace.append("BUY  %s grad real=%.1f age=%s slot=%d size=%.3f" % (mint[:6], b.real[-1] / 1e9, slot - b.created if b.created is not None else -1, slot, size / 1e9))
+        # stream B: dip buys inside the near-graduation zone
+        if p["b_on"] and self.scale > 0:
+            bought = {o["mint"] for o in orders if o["side"] == "buy"}
+            nb = sum(1 for m in self.meta.values() if m.kind == "dip")
+            bc = []
+            for mint in touched:
+                book = self.books[mint]
+                if book.complete or not book.px or not book.hi_short or mint in bought or mint in sell_pending:
+                    continue
+                if mint in state.positions or mint in buy_pending or self.cool.get(mint, -1) > slot:
+                    continue
+                mk = marks.get(mint)
+                real = (int(mk["real_quote_reserves"]) if mk is not None else book.real[-1]) / 1e9
+                if not (p["b_lo"] <= real <= p["b_hi"]):
+                    continue
+                dip = book.px[-1] / book.hi_short[0][1] - 1
+                if dip <= -p["b_dip"]:
+                    bc.append((dip, mint))
+            bc.sort()
+            for dip, mint in bc:
+                if len(orders) >= self.max_orders or nb >= p["b_max"] or committed >= self.max_pos:
+                    break
+                want = int(equity * p["b_frac"] * self.scale)
+                size = min(state.max_buy_lamports(mint) * p["cap_margin"] // 100, want, state.free_cash_lamports() - spent - 2 * self.tx)
+                if size < p["min_buy"]:
+                    continue
+                cid = state.client_id()
+                orders.append({"side": "buy", "client_id": cid, "mint": mint, "quote_lamports": size, "max_slippage_bps": p["buy_slip"]})
+                spent += size + self.tx
+                committed += 1
+                nb += 1
+                self.meta[mint] = Meta("dip", slot)
+                self.trace.append("BUY  %s dip dip=%+.3f slot=%d size=%.3f scale=%.2f" % (mint[:6], dip, slot, size / 1e9, self.scale))
         # qualifier sleeve
         if best_sleeve is None or len(orders) >= self.max_orders or slot - self.first_slot < SLEEVE_START:
             return
