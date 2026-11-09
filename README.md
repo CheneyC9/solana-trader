@@ -3,9 +3,9 @@
 A graduation hunter for the make.fun `memecoin-backtest-48h-01` pump.fun replay (`agent-fun/replay/v2`). Python 3.13,
 standard library only. License: MIT (OSI-approved).
 
-It buys curves that have climbed to 55-66 SOL of real reserve, builds about 10% of equity per coin, sells at +40% (or -60%),
-and trades each coin once. See `STRATEGY.md` for the rules and, more importantly, the honest limits: one dev window, about 43
-trades, and a stress test where 11 of 12 rebuilt copies of the window lost money.
+It buys curves that have climbed to 55-66 SOL of real reserve, builds about 10% of equity per coin (scaled down by a drawdown governor),
+sells at +40% (or -60%), and trades each coin once. See `STRATEGY.md` for the rules and, more importantly, the honest limits: one dev window, about 43
+trades, and a stress test that is a warning (see `STRATEGY.md`).
 
 The first version of this repo (an EV-gated agent ensemble that held cash unless it could prove an edge) is kept under
 `trader/engine.py`, `agents.py`, `ev.py`, `paper.py` and `tools/`; it made +0.02 SOL on dev, which was noise.
@@ -50,10 +50,10 @@ Context that explains why:
 
 ## Result on the dev window (kit grader, process driver)
 
-Graduation hunter (current `main.py`): net PnL +3.15 SOL, 43 coins with a round trip of at least 0.01 SOL, 136 fills, max
-drawdown 18%, +2.42 SOL at 2x fees, guardrails met, L1 regrade reproduced byte for byte. Three coins made 25% of the gain; the
-90% interval is -1.3 to +7.7 SOL. The kit's `--stress 12` (rebuilt copies of the window) lost money on 11 of 12 copies (median
--4.1 SOL; the copies probably lack real graduation dynamics, so this is a warning, not a forecast), so read the dev score as an upper estimate, not a forecast.
+Graduation hunter (current `main.py`): net PnL +2.84 SOL, 43 coins with a round trip of at least 0.01 SOL, 123 fills, max
+drawdown 18%, +2.15 SOL at 2x fees, guardrails met, L1 regrade reproduced byte for byte. Three coins made 25% of the gain; the
+90% interval is -1.4 to +7.3 SOL. See `STRATEGY.md` for the stress-test result and for what was tried and dropped. Read the
+dev score as an upper estimate, not a forecast.
 
 Earlier ensemble (`trader/engine.py`): +0.022 SOL, 24 coins, 0.4% drawdown: noise, with a -0.007 SOL result at 2x fees.
 

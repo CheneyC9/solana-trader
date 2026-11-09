@@ -27,7 +27,7 @@ DEFAULTS = {
     "dd_stop": 0.0,  # stop opening below this share of peak equity (off: the stop-outs it caused cost more than it saved on dev)
     "cooldown": 10**12,  # one entry per coin: coins that stopped out never came back on dev
     "buy_slip": 400,
-    "sell_slip": 3000,
+    "sell_slip": 10000,  # never reject an exit for slippage: a coin that dumps between decision and fill must still be sold
     "cap_margin": 90,  # percent of the per-reply size cap used
     "min_buy": 20_000_000,
     "speed_slots": 0,  # look-back for the climb filter (0 = off)
@@ -63,12 +63,13 @@ SLEEVE_HOLD = 900
 
 
 class Meta:
-    __slots__ = ("kind", "entry_slot", "max_cost", "bought")
+    __slots__ = ("kind", "entry_slot", "max_cost", "bought", "target")
 
     def __init__(self, kind, entry_slot):
         self.kind = kind
         self.entry_slot = entry_slot
         self.max_cost = 0  # largest position cost seen in an account snapshot
+        self.target = 0  # lamports this entry set out to build, fixed at the open (the governor does not shrink a position mid-build)
         self.bought = 0  # lamports paid by this entry's filled buys, curve fees included (from the fills)
 
 
@@ -93,7 +94,7 @@ class GradEngine:
         self.books = {}
         self.meta = {}  # mint -> Meta of a live position
         self.cool = {}  # mint -> slot before which no new entry
-        self.peak = int(hello["capital"]["lamports"])
+        self.peak = max(1, int(hello["capital"]["lamports"]))
         self.qualified = set()
         self.last_sleeve = -(10**12)
         self.first_slot = None
@@ -168,14 +169,18 @@ class GradEngine:
         orders = []
         equity = state.cash
         for mint, held in state.positions.items():
-            vq, vt, rq = self._reserves(state, marks, mint)
+            try:
+                vq, vt, rq = self._reserves(state, marks, mint)
+            except KeyError:
+                continue  # no reserves known for this coin: leave it to the replay's own close
             value = liquidation_value(vq, vt, rq, held.token_amount, self.fee_frac)
             equity += value
             meta = self.meta.get(mint)
             if meta is None:
                 meta = self.meta[mint] = Meta("grad", slot)
             meta.max_cost = max(meta.max_cost, held.cost_lamports)
-            if mint in sell_pending or mint in buy_pending or len(orders) >= self.max_orders:
+            # a top-up still in flight does not delay an exit: a rug must be sold now, and any residue from a late fill is sold next batch
+            if mint in sell_pending or len(orders) >= self.max_orders:
                 continue
             r = value / max(1, held.cost_lamports) - 1
             if meta.kind == "sleeve":
@@ -206,8 +211,8 @@ class GradEngine:
         cands = []
         for mint in touched:
             book = self.books[mint]
-            if book.complete or not book.px or mint in sell_pending:
-                continue
+            if book.complete or not book.px or mint in sell_pending or book.created is None:
+                continue  # a coin first seen through a trade has no CreateEvent: the replay rejects orders on it (not_in_universe)
             mk = marks.get(mint)  # a mark includes our own impact on a coin we hold
             real = (int(mk["real_quote_reserves"]) if mk is not None else book.real[-1]) / 1e9
             age = slot - book.created if book.created is not None else 10**9
@@ -237,8 +242,9 @@ class GradEngine:
                 if meta is not None and meta.kind != "grad":
                     continue
                 opening = False
+            tgt = target if opening or meta is None or not meta.target else meta.target
             have = (held.cost_lamports if held else 0) + pend
-            want = target - have
+            want = tgt - have
             size = min(state.max_buy_lamports(mint) * p["cap_margin"] // 100, want, state.free_cash_lamports() - spent - 2 * self.tx)
             if size < p["min_buy"]:
                 continue
@@ -249,6 +255,7 @@ class GradEngine:
                 committed += 1
                 held_grad += 1
                 self.meta[mint] = Meta("grad", slot)
+                self.meta[mint].target = target
                 b = self.books[mint]
                 self.trace.append("BUY  %s grad real=%.1f age=%s slot=%d size=%.3f" % (mint[:6], b.real[-1] / 1e9, slot - b.created if b.created is not None else -1, slot, size / 1e9))
         # stream B: dip buys inside the near-graduation zone
@@ -291,6 +298,8 @@ class GradEngine:
         if slot - self.last_sleeve < SLEEVE_PACE or len(self.qualified) + sleeve_open >= SLEEVE_TARGET or committed >= self.max_pos:
             return
         mint = best_sleeve[1]
+        if any(o["side"] == "buy" and o["mint"] == mint for o in orders):
+            return
         size = min(state.max_buy_lamports(mint) * p["cap_margin"] // 100, SLEEVE_SIZE, state.free_cash_lamports() - spent - 2 * self.tx)
         if size < QUALIFY_LAMPORTS + 500_000:
             return
