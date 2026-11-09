@@ -1,18 +1,21 @@
 # solana-trader
 
-An EV-gated agent ensemble for the make.fun `memecoin-backtest-48h-01` pump.fun replay
-(`agent-fun/replay/v2`). Python 3.13, standard library only. License: MIT (OSI-approved).
+A graduation hunter for the make.fun `memecoin-backtest-48h-01` pump.fun replay (`agent-fun/replay/v2`). Python 3.13,
+standard library only. License: MIT (OSI-approved).
 
-The short version: on the dev window every price pattern we could find loses to fees, so the bot
-paper-trades a roster of agents, measures what each one *actually* earns net of costs, and only
-risks real size on an agent whose lower confidence bound is positive. Otherwise it holds cash,
-apart from a small, bounded sleeve that exists to satisfy the contest's 20-coin guardrail.
+It buys curves that have climbed to 55-66 SOL of real reserve, builds about 10% of equity per coin, sells at +40% (or -60%),
+and trades each coin once. See `STRATEGY.md` for the rules and, more importantly, the honest limits: one dev window, about 43
+trades, and a stress test where 11 of 12 rebuilt copies of the window lost money.
+
+The first version of this repo (an EV-gated agent ensemble that held cash unless it could prove an edge) is kept under
+`trader/engine.py`, `agents.py`, `ev.py`, `paper.py` and `tools/`; it made +0.02 SOL on dev, which was noise.
 
 ## Layout
 
 | Path | What |
 | --- | --- |
-| `main.py` | Entry point: wires the SDK shim to the engine |
+| `main.py` | Entry point: wires the SDK shim to `GradEngine` |
+| `trader/grad.py` | The graduation hunter: entry band, position building, exits, qualifier sleeve |
 | `trader/book.py` | Per-coin tick history, trailing highs (monotonic deques), features |
 | `trader/agents.py` | The agent roster and `roster(scale)` |
 | `trader/paper.py` | Shadow ledger: heap-scheduled paper fills under the harness's fill model |
@@ -47,12 +50,12 @@ Context that explains why:
 
 ## Result on the dev window (kit grader, process driver)
 
-Net PnL +0.022 SOL, 24 coins with a round trip of at least 0.01 SOL, 48 fills, max drawdown 0.4%,
-guardrails met, L1 regrade reproduced byte for byte. This is noise, not an edge: three coins made
-64% of the gain, net PnL is -0.007 SOL at 2x fees, and the 90% interval is -0.041 to +0.091 SOL. The kit's `--stress 16` (rebuilt copies of the
-window) agrees: median -0.02 SOL, p10 -0.07, p90 +0.04, 11 of 16 copies lost money, and the dev
-score sits above 14 of 16. Expect a small loss (about the cost of the sleeve) unless a live agent
-earns its way in.
+Graduation hunter (current `main.py`): net PnL +3.15 SOL, 43 coins with a round trip of at least 0.01 SOL, 136 fills, max
+drawdown 18%, +2.42 SOL at 2x fees, guardrails met, L1 regrade reproduced byte for byte. Three coins made 25% of the gain; the
+90% interval is -1.3 to +7.7 SOL. The kit's `--stress 12` (rebuilt copies of the window) lost money on 11 of 12 copies (median
+-4.1 SOL; the copies probably lack real graduation dynamics, so this is a warning, not a forecast), so read the dev score as an upper estimate, not a forecast.
+
+Earlier ensemble (`trader/engine.py`): +0.022 SOL, 24 coins, 0.4% drawdown: noise, with a -0.007 SOL result at 2x fees.
 
 ## Running
 
@@ -66,7 +69,7 @@ The grader's exact command is `python3 -P -s /bot/main.py`; `main.py` adds its o
 `vendor/` to `sys.path`. The bot reads no clock, environment or randomness, so both graded
 executions produce the same action log.
 
-## Scaling the ensemble
+## Scaling the earlier ensemble
 
 `Engine(hello, scale=N)` adds exit-rule variants of every tradable agent. Each variant is judged
 independently with the same burden of proof, so more agents means more chances to find a real
